@@ -143,6 +143,7 @@ set -g prefix None
 set -g escape-time 10
 set -g set-clipboard on
 set -g focus-events on
+set -g mouse on
 set -g remain-on-exit on
 set -g remain-on-exit-format ""
 set-hook -g pane-died detach-client

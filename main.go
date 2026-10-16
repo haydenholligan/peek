@@ -135,10 +135,24 @@ func launch(agent string, args []string) (int, error) {
 		return 0, err
 	}
 	defer os.RemoveAll(dir)
-	tmux := []string{"-S", filepath.Join(dir, "tmux.sock"), "-f", "/dev/null"}
+	// Loaded before the agent starts, so even an agent that fails instantly leaves its
+	// pane behind: we detach, then show what it printed and pass on its exit status.
+	conf := filepath.Join(dir, "tmux.conf")
+	if err := os.WriteFile(conf, []byte(`set -g status off
+set -g prefix None
+set -g escape-time 10
+set -g set-clipboard on
+set -g focus-events on
+set -g remain-on-exit on
+set -g remain-on-exit-format ""
+set-hook -g pane-died detach-client
+`), 0o644); err != nil {
+		return 0, err
+	}
+	tmux := []string{"-S", filepath.Join(dir, "tmux.sock"), "-f", conf}
 	run := func(a ...string) (string, error) {
 		out, err := exec.Command("tmux", append(tmux, a...)...).Output()
-		return strings.TrimSpace(string(out)), err
+		return strings.TrimRight(string(out), " \n"), err
 	}
 	defer run("kill-server")
 
@@ -148,11 +162,6 @@ func launch(agent string, args []string) (int, error) {
 	if _, err := run(append([]string{"new-session", "-d", "-s", "peek", "-x", width, "-y", height, "-c", cwd, "--", agent}, args...)...); err != nil {
 		return 0, fmt.Errorf("starting tmux: %w", err)
 	}
-	for _, opt := range [][]string{{"status", "off"}, {"prefix", "None"}, {"escape-time", "10"}, {"set-clipboard", "on"}, {"focus-events", "on"}} {
-		if _, err := run("set-option", "-g", opt[0], opt[1]); err != nil {
-			return 0, err
-		}
-	}
 	pid, err := run("display-message", "-p", "-t", "peek", "#{pane_pid}")
 	if err != nil {
 		return 0, err
@@ -161,16 +170,24 @@ func launch(agent string, args []string) (int, error) {
 		self(), "show", "--pid", pid); err != nil {
 		return 0, err
 	}
-	attach := exec.Command("tmux", append(tmux, "attach-session", "-t", "peek")...)
-	attach.Stdin, attach.Stdout, attach.Stderr = os.Stdin, os.Stdout, os.Stderr
-	if err := attach.Run(); err != nil {
-		var exit *exec.ExitError
-		if errors.As(err, &exit) {
-			return exit.ExitCode(), nil
+	if dead, _ := run("display-message", "-p", "-t", "peek", "#{pane_dead}"); dead != "1" {
+		attach := exec.Command("tmux", append(tmux, "attach-session", "-t", "peek")...)
+		attach.Stdin, attach.Stdout, attach.Stderr = os.Stdin, os.Stdout, os.Stderr
+		if err := attach.Run(); err != nil {
+			return 0, fmt.Errorf("attaching to tmux: %w", err)
 		}
-		return 0, err
+		fmt.Print("\x1b[1A\x1b[2K\r") // erase tmux's "[detached (from session peek)]"
 	}
-	return 0, nil
+	// The agent's last screen, as it would remain after running it directly. tmux scrolls
+	// a dead pane's output up into history, so take a screenful of that too.
+	if screen, err := run("capture-pane", "-p", "-e", "-S", "-"+height, "-t", "peek"); err == nil {
+		if screen = strings.Trim(screen, "\n"); screen != "" {
+			fmt.Println(screen)
+		}
+	}
+	status, _ := run("display-message", "-p", "-t", "peek", "#{pane_dead_status}")
+	code, _ := strconv.Atoi(status)
+	return code, nil
 }
 
 func terminalSize() (string, string) {

@@ -103,3 +103,41 @@ func TestShortcutKeepsDraftAndAgentRunning(t *testing.T) {
 	tmux("send-keys", "Enter")
 	until("draft submitted", func() bool { return read("draft") == "KEEP-DRAFT-AFTER" })
 }
+
+// TestFailingAgentShowsItsError: an agent that dies at once must not leave a bare
+// "[exited]"; its output and exit status come through.
+func TestFailingAgentShowsItsError(t *testing.T) {
+	if testing.Short() {
+		t.Skip("terminal test")
+	}
+	if _, err := exec.LookPath("tmux"); err != nil {
+		t.Skip("tmux not installed")
+	}
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "bin")
+	os.MkdirAll(bin, 0o755)
+	if out, err := exec.Command("go", "build", "-o", filepath.Join(bin, "peek"), ".").CombinedOutput(); err != nil {
+		t.Fatalf("build: %v\n%s", err, out)
+	}
+	os.WriteFile(filepath.Join(bin, "claude"), []byte("#!/bin/sh\necho 'Error: claude native binary not installed.'\nexit 3\n"), 0o755)
+	sockets, err := os.MkdirTemp("", "peek-test-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer os.RemoveAll(sockets)
+	outer := []string{"-S", filepath.Join(sockets, "outer.sock"), "-f", "/dev/null"}
+	quote := func(s string) string { return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'" }
+	command := "env -u TMUX PATH=" + quote(bin+":"+os.Getenv("PATH")) + " peek claude; echo EXIT=$?; sleep 30"
+	exec.Command("tmux", append(outer, "new-session", "-d", "-x", "100", "-y", "30", command)...).Run()
+	defer exec.Command("tmux", append(outer, "kill-server")...).Run()
+	var screen string
+	for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
+		out, _ := exec.Command("tmux", append(outer, "capture-pane", "-p")...).Output()
+		if screen = string(out); strings.Contains(screen, "EXIT=") {
+			break
+		}
+	}
+	if !strings.Contains(screen, "native binary not installed") || !strings.Contains(screen, "EXIT=3") {
+		t.Fatalf("agent's error or status lost. Screen:\n%s", screen)
+	}
+}

@@ -202,4 +202,3 @@ func TestReaderNavigatesAndEscapes(t *testing.T) {
 		t.Fatal("esc should quit")
 	}
 }
-

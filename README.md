@@ -36,8 +36,15 @@ example `peek codex resume` or `peek claude --continue`.
 | ↑ ↓ j k, Space, PgUp/PgDn | scroll |
 | g / G | top / bottom |
 | [ and ] | earlier / later reply in this conversation |
+| s | show / hide your sent messages above the reply |
 
-It opens on the latest finished reply. On macOS it follows your Light/Dark
+It opens on the latest finished reply. Press **s** to see the messages you sent
+for that reply, including attachment names when available. The choice carries
+across replies until you close the reader. **]** also reaches newer unanswered
+messages; if there are no replies yet, those messages appear immediately.
+Reopen the reader to load a newly finished reply.
+
+On macOS it follows your Light/Dark
 appearance each time it opens and paints its own background to match, so it stays
 readable even when your terminal's theme differs from the Mac's.
 
@@ -67,7 +74,10 @@ readable even when your terminal's theme differs from the Mac's.
 
 - It reads each agent's internal transcript format, which could change.
   Verified with Claude Code 2.1 and Codex CLI 0.157.
-- Replies still being written aren't shown until the turn finishes.
+- Replies still being written aren't shown until the turn finishes; your sent
+  messages are readable while you wait.
+- Sent-message availability depends on the transcript format. Images without
+  recorded filenames appear as labels such as “Image 1”.
 - Terminal Markdown: no images or Mermaid diagrams.
 - zellij can't bind Ctrl+\\, so it uses Alt+R. On macOS that needs "Option as
   Alt" in your terminal, which zellij's own shortcuts already assume.

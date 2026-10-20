@@ -291,84 +291,248 @@ func eachLine(path string, fn func([]byte)) error {
 	}
 }
 
-func codexReplies(path string) ([]string, error) {
-	var replies []string
+// An exchange contains a finished reply or sent messages awaiting a reply.
+type exchange struct {
+	sent  []string
+	reply string
+}
+
+func codexConversation(path string) ([]exchange, error) {
+	var all []exchange
+	var completed []int
+	turns := map[string]int{}
+	seen := map[string]bool{}
 	err := eachLine(path, func(line []byte) {
-		if !bytes.Contains(line, []byte(`"task_complete"`)) {
-			return // Skip decoding the bulk of a long session.
+		if !bytes.Contains(line, []byte(`"event_msg"`)) {
+			return
 		}
 		var e struct {
 			Type    string `json:"type"`
 			Payload struct {
-				Type    string  `json:"type"`
-				Message *string `json:"last_agent_message"`
+				Type    string `json:"type"`
+				TurnID  string `json:"turn_id"`
+				Message string `json:"last_agent_message"`
+				Item    struct {
+					Type    string `json:"type"`
+					ID      string `json:"id"`
+					Content []struct {
+						Type string `json:"type"`
+						Text string `json:"text"`
+						Path string `json:"path"`
+						Name string `json:"name"`
+					} `json:"content"`
+				} `json:"item"`
 			} `json:"payload"`
 		}
-		if json.Unmarshal(line, &e) == nil && e.Type == "event_msg" && e.Payload.Type == "task_complete" &&
-			e.Payload.Message != nil && strings.TrimSpace(*e.Payload.Message) != "" {
-			replies = append(replies, *e.Payload.Message)
-		}
-	})
-	return replies, err
-}
-
-// claudeReplies joins the text of each finished assistant message.
-// Claude Code writes one message across several lines that share an id.
-func claudeReplies(path string) ([]string, error) {
-	var order []string
-	texts := map[string][]string{}
-	finished := map[string]bool{}
-	err := eachLine(path, func(line []byte) {
-		if !bytes.Contains(line, []byte(`"assistant"`)) {
+		if json.Unmarshal(line, &e) != nil || e.Type != "event_msg" {
 			return
 		}
+		p := e.Payload
+		var sent string
+		if p.Type == "item_completed" && p.Item.Type == "UserMessage" {
+			if p.Item.ID != "" && seen[p.Item.ID] {
+				return
+			}
+			seen[p.Item.ID] = true
+			var parts []string
+			images := 0
+			for _, b := range p.Item.Content {
+				switch b.Type {
+				case "text":
+					parts = append(parts, b.Text)
+				case "local_image", "image":
+					images++
+					label := fmt.Sprintf("Image %d", images)
+					if b.Path != "" {
+						label = filepath.Base(b.Path)
+					}
+					parts = append(parts, "Attachment: "+label)
+				case "skill":
+					parts = append(parts, "Skill: "+b.Name)
+				}
+			}
+			sent = strings.Join(parts, "\n\n")
+		} else if p.Type != "task_complete" || strings.TrimSpace(p.Message) == "" {
+			return
+		}
+		if strings.TrimSpace(sent) == "" && p.Type != "task_complete" {
+			return
+		}
+		i, ok := turns[p.TurnID]
+		if !ok || (p.TurnID == "" && all[i].reply != "") {
+			i = len(all)
+			all = append(all, exchange{})
+			turns[p.TurnID] = i
+		}
+		if sent != "" {
+			all[i].sent = append(all[i].sent, sent)
+		} else {
+			if all[i].reply == "" {
+				completed = append(completed, i)
+			}
+			all[i].reply = p.Message
+		}
+	})
+	// Keep finished replies in completion order, followed by unanswered turns.
+	var ordered []exchange
+	for _, i := range completed {
+		ordered = append(ordered, all[i])
+	}
+	for _, entry := range all {
+		if entry.reply == "" {
+			ordered = append(ordered, entry)
+		}
+	}
+	return ordered, err
+}
+
+// Claude writes assistant text across several rows sharing a message ID.
+func claudeConversation(path string) ([]exchange, error) {
+	var all []exchange
+	var pending []string
+	texts := map[string][]string{}
+	finished := map[string]bool{}
+	completed := map[string]int{}
+	seen := map[string]bool{}
+	type node struct {
+		parent, messageID, sent string
+	}
+	nodes := map[string]node{}
+	var replyNodes []string
+	err := eachLine(path, func(line []byte) {
 		var e struct {
-			Type        string `json:"type"`
-			IsSidechain bool   `json:"isSidechain"`
-			Message     struct {
+			Type                 string `json:"type"`
+			UUID                 string `json:"uuid"`
+			ParentUUID           string `json:"parentUuid"`
+			InterruptedMessageID string `json:"interruptedMessageId"`
+			IsSidechain          bool   `json:"isSidechain"`
+			IsMeta               bool   `json:"isMeta"`
+			IsCompactSummary     bool   `json:"isCompactSummary"`
+			TurnOrigin           string `json:"turnOrigin"`
+			PromptSource         string `json:"promptSource"`
+			Message              struct {
 				ID         string          `json:"id"`
 				StopReason string          `json:"stop_reason"`
 				Content    json.RawMessage `json:"content"`
 			} `json:"message"`
 		}
-		if json.Unmarshal(line, &e) != nil || e.Type != "assistant" || e.IsSidechain || e.Message.ID == "" {
+		if json.Unmarshal(line, &e) != nil {
 			return
 		}
-		id := e.Message.ID
-		if _, seen := texts[id]; !seen {
-			order = append(order, id)
-			texts[id] = nil
+		if e.UUID != "" {
+			if seen[e.UUID] {
+				return
+			}
+			seen[e.UUID] = true
+			nodes[e.UUID] = node{parent: e.ParentUUID, messageID: e.Message.ID}
 		}
-		finished[id] = finished[id] || e.Message.StopReason == "end_turn"
+		if e.IsSidechain || e.IsMeta || e.IsCompactSummary || e.InterruptedMessageID != "" {
+			return
+		}
 		var blocks []struct {
 			Type string `json:"type"`
 			Text string `json:"text"`
 		}
-		if json.Unmarshal(e.Message.Content, &blocks) == nil {
+		json.Unmarshal(e.Message.Content, &blocks)
+		switch e.Type {
+		case "user":
+			if (e.TurnOrigin != "" && e.TurnOrigin != "human") ||
+				(e.PromptSource != "" && e.PromptSource != "typed" && e.PromptSource != "queued") {
+				return
+			}
+			var parts []string
+			var plain string
+			if json.Unmarshal(e.Message.Content, &plain) == nil {
+				parts = append(parts, plain)
+			}
+			images := 0
+			for _, b := range blocks {
+				switch b.Type {
+				case "text":
+					parts = append(parts, b.Text)
+				case "image":
+					images++
+					parts = append(parts, fmt.Sprintf("Attachment: Image %d", images))
+				}
+			}
+			if sent := strings.Join(parts, "\n\n"); strings.TrimSpace(sent) != "" {
+				pending = append(pending, sent)
+				if e.UUID != "" {
+					n := nodes[e.UUID]
+					n.sent = sent
+					nodes[e.UUID] = n
+				}
+			}
+		case "assistant":
+			id := e.Message.ID
+			if id == "" {
+				return
+			}
 			for _, b := range blocks {
 				if b.Type == "text" && b.Text != "" {
 					texts[id] = append(texts[id], b.Text)
 				}
 			}
+			finished[id] = finished[id] || e.Message.StopReason == "end_turn"
+			i, recorded := completed[id]
+			if !finished[id] {
+				return
+			}
+			reply := strings.Join(texts[id], "\n\n")
+			if strings.TrimSpace(reply) == "" {
+				return
+			}
+			if !recorded {
+				i = len(all)
+				all = append(all, exchange{sent: pending})
+				replyNodes = append(replyNodes, e.UUID)
+				pending = nil
+				completed[id] = i
+			}
+			all[i].reply = reply
 		}
 	})
-	var replies []string
-	for _, id := range order {
-		if text := strings.Join(texts[id], "\n\n"); finished[id] && strings.TrimSpace(text) != "" {
-			replies = append(replies, text)
+	// Parent links keep prompts from a different branch out of a reply.
+	// Older records without UUIDs retain the chronological association above.
+	for i, uuid := range replyNodes {
+		if uuid == "" {
+			continue
 		}
+		var sent []string
+		visited := map[string]bool{}
+		for uuid != "" && !visited[uuid] {
+			visited[uuid] = true
+			n, ok := nodes[uuid]
+			if !ok {
+				break
+			}
+			if previous, finished := completed[n.messageID]; finished && previous != i {
+				break
+			}
+			if n.sent != "" {
+				sent = append(sent, n.sent)
+			}
+			uuid = n.parent
+		}
+		for left, right := 0, len(sent)-1; left < right; left, right = left+1, right-1 {
+			sent[left], sent[right] = sent[right], sent[left]
+		}
+		all[i].sent = sent
 	}
-	return replies, err
+	if len(pending) > 0 {
+		all = append(all, exchange{sent: pending})
+	}
+	return all, err
 }
 
-func replies(path string) ([]string, error) {
-	read := claudeReplies
+func conversation(path string) ([]exchange, error) {
+	read := claudeConversation
 	if strings.HasPrefix(filepath.Base(path), "rollout-") {
-		read = codexReplies
+		read = codexConversation
 	}
 	all, err := read(path)
 	if err == nil && len(all) == 0 {
-		err = fmt.Errorf("no finished reply yet in %s; let the agent finish, then try again", filepath.Base(path))
+		err = fmt.Errorf("no messages yet in %s; send a message, then try again", filepath.Base(path))
 	}
 	return all, err
 }

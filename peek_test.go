@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -50,18 +51,18 @@ func TestClaudeRepliesJoinFinishedMessagesOnly(t *testing.T) {
 		assistant("a", "end_turn", nil, text("Old answer")),
 		map[string]any{"type": "user", "message": map[string]any{"content": "next"}},
 		assistant("b", "end_turn", nil, map[string]any{"type": "thinking", "thinking": "hmm"}),
-		assistant("b", "end_turn", nil, text("# Latest")),
+		assistant("b", "", nil, text("# Latest")),
 		map[string]any{"type": "attachment"},
 		assistant("b", "end_turn", nil, text("Bonjour é 🌞")),
 		assistant("c", "end_turn", map[string]any{"isSidechain": true}, text("Subagent")),
 		assistant("d", "tool_use", nil, text("Still working"), map[string]any{"type": "tool_use"}),
 	)
-	got, err := replies(path)
+	got, err := conversation(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []string{"Old answer", "# Latest\n\nBonjour é 🌞"}
-	if strings.Join(got, "|") != strings.Join(want, "|") {
+	want := []exchange{{reply: "Old answer"}, {sent: []string{"next"}, reply: "# Latest\n\nBonjour é 🌞"}}
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("got %q", got)
 	}
 }
@@ -73,16 +74,16 @@ func TestCodexRepliesUseCompletedTurns(t *testing.T) {
 	}
 	writeJSONL(t, path, complete("One"), complete("Two é"),
 		map[string]any{"type": "response_item", "payload": map[string]any{"role": "assistant"}})
-	got, err := replies(path)
-	if err != nil || strings.Join(got, "|") != "One|Two é" {
+	got, err := conversation(path)
+	if err != nil || !reflect.DeepEqual(got, []exchange{{reply: "One"}, {reply: "Two é"}}) {
 		t.Fatalf("got %q %v", got, err)
 	}
 }
 
-func TestNoFinishedReplyIsExplained(t *testing.T) {
+func TestEmptyConversationIsExplained(t *testing.T) {
 	path := filepath.Join(isolate(t), "rollout-x.jsonl")
 	writeJSONL(t, path, map[string]any{"type": "event_msg", "payload": map[string]any{"type": "task_started"}})
-	if _, err := replies(path); err == nil || !strings.Contains(err.Error(), "no finished reply") {
+	if _, err := conversation(path); err == nil || !strings.Contains(err.Error(), "no messages yet") {
 		t.Fatalf("got %v", err)
 	}
 }
@@ -244,7 +245,7 @@ func TestHookOutsideZellijDoesNothing(t *testing.T) {
 
 func TestReaderNavigatesAndEscapes(t *testing.T) {
 	long := "# Title\n\n| A | B |\n| - | - |\n| 1 | 2 |\n\n" + strings.Repeat("Paragraph.\n\n", 80)
-	r := newReader([]string{"First reply", long}, false)
+	r := newReader([]exchange{{reply: "First reply"}, {reply: long}}, false)
 	r.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	view := func() string { return ansi.Strip(r.View()) }
 	if !strings.Contains(view(), "Reply 2 of 2") || !strings.Contains(view(), "Title") {

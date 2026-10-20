@@ -94,13 +94,13 @@ func show(args []string) error {
 		}
 		return "", errors.New("show needs --tmux, --zellij or --pid")
 	}()
-	var all []string
+	var all []exchange
 	if err == nil {
-		all, err = replies(path)
+		all, err = conversation(path)
 	}
 	if err != nil {
 		// Explain in the reader itself: stderr vanishes when the popup closes.
-		all = []string{"# Nothing to read yet\n\n" + err.Error() + "."}
+		all = []exchange{{reply: "# Nothing to read yet\n\n" + err.Error() + "."}}
 	}
 	return runReader(all)
 }

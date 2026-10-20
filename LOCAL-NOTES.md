@@ -22,6 +22,8 @@ Any arguments after `codex` are passed through to Codex.
 - **Ctrl+\** opens the latest completed reply as Markdown.
 - **Esc** or **q** returns to the agent, preserving your draft.
 - **[** and **]** move to earlier and later replies.
+- **s** shows or hides your sent messages above the current reply.
+- **]** can also reach unanswered messages. Reopen Peek to load a finished reply.
 - Arrow keys, **j/k**, Space, and Page Up/Down scroll.
 - **g/G** jump to the top/bottom.
 - On macOS, the reader checks system light/dark appearance when opened.

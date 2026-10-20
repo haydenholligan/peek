@@ -13,7 +13,8 @@ const fakeCodex = `#!/bin/sh
 f="$CODEX_HOME/sessions/2026/09/27/rollout-test.jsonl"
 mkdir -p "$(dirname "$f")"
 printf '%s\n' '{"type":"session_meta","payload":{"source":"cli"}}' \
-  '{"type":"event_msg","payload":{"type":"task_complete","last_agent_message":"# Reader test\n\n**Bonjour** from the right session.\n\n| Col | Val |\n| --- | --- |\n| a | 1 |"}}' > "$f"
+  '{"type":"event_msg","payload":{"type":"item_completed","turn_id":"turn-1","item":{"type":"UserMessage","id":"user-1","content":[{"type":"text","text":"Explain the SENT-PROMPT example."}]}}}' \
+  '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":"# Reader test\n\n**Bonjour** from the right session.\n\n| Col | Val |\n| --- | --- |\n| a | 1 |"}}' > "$f"
 exec 3>>"$f"
 ( i=0; while :; do i=$((i+1)); echo $i > "$T/heartbeat"; sleep 0.1; done ) &
 echo FAKE-AGENT-READY
@@ -88,6 +89,14 @@ func TestShortcutKeepsDraftAndAgentRunning(t *testing.T) {
 		return strings.Contains(s, "48;2;251;251;250") || strings.Contains(s, "48;2;28;29;34")
 	}
 	until("painted background", painted)
+	if strings.Contains(screen(), "SENT-PROMPT") {
+		t.Fatal("sent messages should start hidden")
+	}
+	tmux("send-keys", "s")
+	until("sent message above reply", func() bool {
+		s := screen()
+		return strings.Contains(s, "SENT-PROMPT") && strings.Contains(s, "Bonjour")
+	})
 	beat := read("heartbeat")
 	until("agent to keep running under the reader", func() bool { return read("heartbeat") != beat })
 
@@ -99,6 +108,13 @@ func TestShortcutKeepsDraftAndAgentRunning(t *testing.T) {
 	if painted() {
 		t.Fatalf("reader colors leaked onto the agent:\n%s", tmux("capture-pane", "-e", "-p"))
 	}
+	tmux("send-keys", `C-\`)
+	until("reopened reader with sent hidden", func() bool {
+		s := screen()
+		return strings.Contains(s, "Bonjour") && !strings.Contains(s, "SENT-PROMPT")
+	})
+	tmux("send-keys", "Escape")
+	until("draft restored again", func() bool { return strings.Contains(screen(), "KEEP-DRAFT") })
 	tmux("send-keys", "-l", "--", "-AFTER")
 	tmux("send-keys", "Enter")
 	until("draft submitted", func() bool { return read("draft") == "KEEP-DRAFT-AFTER" })

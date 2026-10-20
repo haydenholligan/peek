@@ -143,6 +143,66 @@ func TestResumedCodexFoundByID(t *testing.T) {
 	}
 }
 
+func TestDaemonCodexFoundFromPaneStatus(t *testing.T) {
+	dir := isolate(t)
+	id := "01a156de-ba8f-72b0-8a44-d5f4631dedd7"
+	path := filepath.Join(codexHome(), "sessions", "2026", "10", "19", "rollout-test-"+id+".jsonl")
+	codexMeta(t, path, `"vscode"`)
+	stub(t, []process{{10, 1, "node /bin/codex"}, {11, 10, "/bin/codex"}, {20, 1, "codex app-server"}}, map[int][]string{20: {path}})
+	t.Setenv("TMUX", "/tmp/test.sock,1,0")
+	// A different pane is focused; the lookup must capture the requested root.
+	bin := filepath.Join(dir, "bin")
+	os.MkdirAll(bin, 0o755)
+	script := `#!/bin/sh
+case "$*" in
+  'list-panes -a -F #{pane_pid} #{pane_id}') printf '30 %%0\n10 %%1\n' ;;
+  'capture-pane -p -t %1') printf '%s\n' 'Agent reply' 'GPT-6.1-Sol high · ~ · ` + id + ` · Context 83% left · main' ;;
+  *) exit 1 ;;
+esac
+`
+	if err := os.WriteFile(filepath.Join(bin, "tmux"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	if got, err := findPaneTranscript(10); err != nil || got != path {
+		t.Fatalf("daemon-backed pane: got %q %v", got, err)
+	}
+	if _, err := findPaneTranscript(30); err == nil {
+		t.Fatal("unrelated pane should not guess")
+	}
+	// A stale Codex footer after the agent exits must not select its session.
+	stub(t, []process{{10, 1, "zsh"}}, nil)
+	if _, err := findPaneTranscript(10); err == nil {
+		t.Fatal("pane without a running Codex should not use a stale footer")
+	}
+}
+
+func TestCodexStatusRequiresUnambiguousFooter(t *testing.T) {
+	isolate(t)
+	id := "01a156de-ba8f-72b0-8a44-d5f4631dedd7"
+	path := filepath.Join(codexHome(), "sessions", "2026", "10", "19", "rollout-test-"+id+".jsonl")
+	codexMeta(t, path, `"vscode"`)
+	footer := "GPT-6.1-Sol high · " + id + " · Context 83% left · main"
+	for _, screen := range []string{
+		"", id, "Reply mentioning " + id,
+		footer + "\nAsk Codex to do anything",
+		"GPT high · " + id,
+		footer + " · 01a156f2-9e62-7511-89a8-215da4328349",
+		strings.ReplaceAll(footer, id, "01a156f2-9e62-7511-89a8-215da4328349"),
+	} {
+		if got := codexStatusTranscript(screen); got != "" {
+			t.Errorf("should reject %q; got %q", screen, got)
+		}
+	}
+	if got := codexStatusTranscript("Reply text\n" + footer + "\n\n"); got != path {
+		t.Fatalf("valid footer: got %q", got)
+	}
+	codexMeta(t, path, `{"subagent":{}}`)
+	if got := codexStatusTranscript(footer); got != "" {
+		t.Fatalf("subagent should not be selected: %q", got)
+	}
+}
+
 func TestZellijHookLinksPaneUnderFloatingReader(t *testing.T) {
 	isolate(t)
 	env := func(pane string) func(string) string {

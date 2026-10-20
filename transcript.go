@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 )
@@ -21,8 +22,9 @@ type process struct {
 
 // Swapped out in tests.
 var (
-	listProcesses = psProcesses
-	openFiles     = lsofFiles
+	listProcesses   = psProcesses
+	openFiles       = lsofFiles
+	errNoTranscript = errors.New("no Codex or Claude Code conversation found in this pane yet")
 )
 
 func home(env, fallback string) string {
@@ -198,7 +200,74 @@ func findTranscript(root int) (string, error) {
 			return path, nil
 		}
 	}
-	return "", errors.New("no Codex or Claude Code conversation found in this pane yet")
+	return "", errNoTranscript
+}
+
+// A daemon-backed Codex TUI does not own its rollout file. Its status line can
+// identify the thread, but only use a complete ID in a recognizable final footer.
+var codexStatusID = regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var codexStatusContext = regexp.MustCompile(`^Context [0-9]+% left$`)
+
+func codexStatusTranscript(screen string) string {
+	lines := strings.Split(strings.TrimSpace(screen), "\n")
+	fields := strings.Split(lines[len(lines)-1], "·")
+	var id string
+	context := false
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if codexStatusID.MatchString(field) {
+			if id != "" {
+				return ""
+			}
+			id = field
+		}
+		context = context || codexStatusContext.MatchString(field)
+	}
+	if id != "" && context {
+		if path := codexByID(id); path != "" && isPrimaryCodex(path) {
+			return path
+		}
+	}
+	return ""
+}
+
+func findPaneTranscript(root int) (string, error) {
+	path, err := findTranscript(root)
+	if !errors.Is(err, errNoTranscript) || os.Getenv("TMUX") == "" {
+		return path, err
+	}
+	procs, listErr := listProcesses()
+	if listErr != nil {
+		return "", err
+	}
+	codex := false
+	for _, p := range descendants(root, procs) {
+		fields := strings.Fields(p.args)
+		if len(fields) > 0 && filepath.Base(fields[0]) == "codex" {
+			codex = true
+		}
+	}
+	if !codex {
+		return "", err
+	}
+	// Match the requested process, not the client's focused pane: focus can move
+	// while the popup opens, and --pid may refer to another pane entirely.
+	out, listErr := exec.Command("tmux", "list-panes", "-a", "-F", "#{pane_pid} #{pane_id}").Output()
+	if listErr == nil {
+		for _, line := range strings.Split(string(out), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) != 2 || fields[0] != strconv.Itoa(root) {
+				continue
+			}
+			screen, captureErr := exec.Command("tmux", "capture-pane", "-p", "-t", fields[1]).Output()
+			if captureErr == nil {
+				if path := codexStatusTranscript(string(screen)); path != "" {
+					return path, nil
+				}
+			}
+		}
+	}
+	return "", err
 }
 
 func eachLine(path string, fn func([]byte)) error {

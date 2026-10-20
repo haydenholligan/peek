@@ -88,9 +88,9 @@ func show(args []string) error {
 			if err != nil {
 				return "", fmt.Errorf("asking tmux for the pane: %w", err)
 			}
-			return findTranscript(root)
+			return findPaneTranscript(root)
 		case *pid != 0:
-			return findTranscript(*pid)
+			return findPaneTranscript(*pid)
 		}
 		return "", errors.New("show needs --tmux, --zellij or --pid")
 	}()

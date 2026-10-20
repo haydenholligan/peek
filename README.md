@@ -48,10 +48,14 @@ readable even when your terminal's theme differs from the Mac's.
   lost. `peek claude` and `peek codex` start the agent inside a private,
   invisible tmux server that owns just the shortcut. That server doesn't read
   or change your tmux config.
-- **Finding the conversation:** it reads the agent's own transcript, never the
-  screen, so the Markdown is exact.
+- **Finding the conversation:** reply text comes from the agent's own transcript,
+  so the Markdown is exact.
   - Claude Code keeps `~/.claude/sessions/<pid>.json` for each running session.
-  - Codex holds its `rollout-*.jsonl` transcript open, which `lsof` can see.
+  - Codex normally holds its `rollout-*.jsonl` transcript open, which `lsof` can see.
+    When a shared background server owns the transcript, tmux users can also be
+    matched by the exact session ID in Codex's bottom status line. This fallback
+    requires both the session ID and `Context …% left` to be visible on that line;
+    reply content still comes from the transcript.
   - peek walks the processes in the pane and uses the agent nearest the top, so
     subagents and other panes are never mistaken for it. If it can't tell, it
     says so instead of guessing.

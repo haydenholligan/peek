@@ -8,11 +8,16 @@ draft is intact, and the agent never stopped working.
 Works with **Claude Code** and **Codex**, in any terminal app, as a single
 binary with no runtime.
 
+![peek opening a Claude Code reply as Markdown, then returning with the draft intact](docs/demo.gif)
+
 ## Install
 
 ```sh
 go install github.com/haydenholligan/peek@latest
 ```
+
+Needs Go 1.25+ to build, plus `tmux` and `lsof` on PATH. Developed and tested
+on macOS; Linux should work but is untested.
 
 Then run `peek setup` for the exact lines to add, with your binary's path
 filled in.
@@ -88,3 +93,10 @@ readable even when your terminal's theme differs from the Mac's.
 go test ./...        # includes a real tmux test: open, Esc, draft preserved
 go test -short ./... # skip it
 ```
+
+The demo GIF is recorded with [VHS](https://github.com/charmbracelet/vhs) from
+[`docs/demo.tape`](docs/demo.tape).
+
+## License
+
+[MIT](LICENSE)
